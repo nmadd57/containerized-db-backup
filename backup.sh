@@ -11,12 +11,18 @@ log() { echo "[$(date -Iseconds)] $*"; }
 
 backup_postgres() {
     local ts="$1"
+    local out="$DEST/maas/${ts}.sql.gz"
+    local tmp="${out}.tmp"
     log "Backing up MAAS PostgreSQL (${PG_DB})..."
-    PGPASSWORD="$PG_PASSWORD" pg_dump \
+    if ! PGPASSWORD="$PG_PASSWORD" pg_dump \
         -h "$PG_HOST" -p "${PG_PORT:-5432}" \
         -U "$PG_USER" "$PG_DB" \
-        | gzip > "$DEST/maas/${ts}.sql.gz"
-    log "Saved: $DEST/maas/${ts}.sql.gz ($(du -sh "$DEST/maas/${ts}.sql.gz" | cut -f1))"
+        | gzip > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$out"
+    log "Saved: $out ($(du -sh "$out" | cut -f1))"
 }
 
 backup_mariadb() {
@@ -32,19 +38,29 @@ backup_mariadb() {
         log "No cloud* databases found, skipping MariaDB backup."
         return
     fi
+
+    local out="$DEST/cloudstack/${ts}.sql.gz"
+    local tmp="${out}.tmp"
     # shellcheck disable=SC2086
-    MYSQL_PWD="$MYSQL_PASSWORD" mysqldump \
+    if ! MYSQL_PWD="$MYSQL_PASSWORD" mysqldump \
         -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" \
         -u "$MYSQL_USER" \
         --single-transaction --routines --triggers --events \
         --databases $dbs \
-        | gzip > "$DEST/cloudstack/${ts}.sql.gz"
-    log "Saved: $DEST/cloudstack/${ts}.sql.gz ($(du -sh "$DEST/cloudstack/${ts}.sql.gz" | cut -f1))"
+        | gzip > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$out"
+    log "Saved: $out ($(du -sh "$out" | cut -f1))"
 }
 
 prune() {
     log "Pruning backups older than ${RETAIN_DAYS} days..."
     find "$DEST/maas" "$DEST/cloudstack" -name "*.sql.gz" -mtime +"$RETAIN_DAYS" -delete
+    # Clears out partial archives from a run that was killed mid-dump, since
+    # those don't match the *.sql.gz glob above and would otherwise pile up.
+    find "$DEST/maas" "$DEST/cloudstack" -name "*.sql.gz.tmp" -delete
 }
 
 run_backup() {
