@@ -4,7 +4,9 @@ RUN apk add --no-cache \
     postgresql14-client \
     mariadb-client \
     gzip \
-    bash
+    bash \
+    age \
+    rclone
 
 COPY backup.sh /backup.sh
 RUN chmod +x /backup.sh

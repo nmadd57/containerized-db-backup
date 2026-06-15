@@ -5,19 +5,20 @@ INTERVAL="${BACKUP_INTERVAL_SECONDS:-86400}"
 RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-7}"
 DEST=/backups
 
-mkdir -p "$DEST/maas" "$DEST/cloudstack"
+mkdir -p "$DEST/maas" "$DEST/cloudstack" "$DEST/outline"
 
 log() { echo "[$(date -Iseconds)] $*"; }
 
 backup_postgres() {
-    local ts="$1"
-    local out="$DEST/maas/${ts}.sql.gz"
+    local ts="$1" name="$2" host="$3" port="$4" user="$5" pass="$6" db="$7"
+    local out="$DEST/$name/${ts}.sql.gz.age"
     local tmp="${out}.tmp"
-    log "Backing up MAAS PostgreSQL (${PG_DB})..."
-    if ! PGPASSWORD="$PG_PASSWORD" pg_dump \
-        -h "$PG_HOST" -p "${PG_PORT:-5432}" \
-        -U "$PG_USER" "$PG_DB" \
-        | gzip > "$tmp"; then
+    log "Backing up $name PostgreSQL (${db})..."
+    if ! PGPASSWORD="$pass" pg_dump \
+        -h "$host" -p "$port" \
+        -U "$user" "$db" \
+        | gzip \
+        | age -r "$AGE_RECIPIENT" -o "$tmp"; then
         rm -f "$tmp"
         return 1
     fi
@@ -39,7 +40,7 @@ backup_mariadb() {
         return
     fi
 
-    local out="$DEST/cloudstack/${ts}.sql.gz"
+    local out="$DEST/cloudstack/${ts}.sql.gz.age"
     local tmp="${out}.tmp"
     # shellcheck disable=SC2086
     if ! MYSQL_PWD="$MYSQL_PASSWORD" mysqldump \
@@ -47,7 +48,8 @@ backup_mariadb() {
         -u "$MYSQL_USER" \
         --single-transaction --routines --triggers --events \
         --databases $dbs \
-        | gzip > "$tmp"; then
+        | gzip \
+        | age -r "$AGE_RECIPIENT" -o "$tmp"; then
         rm -f "$tmp"
         return 1
     fi
@@ -55,21 +57,44 @@ backup_mariadb() {
     log "Saved: $out ($(du -sh "$out" | cut -f1))"
 }
 
+backup_outline_files() {
+    local ts="$1"
+    local out="$DEST/outline/files_${ts}.tar.gz.age"
+    local tmp="${out}.tmp"
+    log "Backing up Outline file storage..."
+    if ! tar -C /data/outline-files -czf - . \
+        | age -r "$AGE_RECIPIENT" -o "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$out"
+    log "Saved: $out ($(du -sh "$out" | cut -f1))"
+}
+
+upload_remote() {
+    log "Uploading backups to $RCLONE_REMOTE..."
+    rclone copy "$DEST" "$RCLONE_REMOTE" -v
+    log "Upload complete."
+}
+
 prune() {
     log "Pruning backups older than ${RETAIN_DAYS} days..."
-    find "$DEST/maas" "$DEST/cloudstack" -name "*.sql.gz" -mtime +"$RETAIN_DAYS" -delete
+    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" -name "*.age" -mtime +"$RETAIN_DAYS" -delete
     # Clears out partial archives from a run that was killed mid-dump, since
-    # those don't match the *.sql.gz glob above and would otherwise pile up.
-    find "$DEST/maas" "$DEST/cloudstack" -name "*.sql.gz.tmp" -delete
+    # those don't match the *.age glob above and would otherwise pile up.
+    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" -name "*.age.tmp" -delete
 }
 
 run_backup() {
     local ts
     ts=$(date +%Y%m%d_%H%M%S)
     log "--- Starting backup run ---"
-    backup_postgres "$ts" || log "ERROR: PostgreSQL backup failed"
-    backup_mariadb  "$ts" || log "ERROR: MariaDB backup failed"
+    backup_postgres "$ts" maas "$PG_HOST" "${PG_PORT:-5432}" "$PG_USER" "$PG_PASSWORD" "$PG_DB" || log "ERROR: MAAS PostgreSQL backup failed"
+    backup_mariadb "$ts" || log "ERROR: MariaDB backup failed"
+    backup_postgres "$ts" outline "$OUTLINE_PG_HOST" "${OUTLINE_PG_PORT:-5432}" "$OUTLINE_PG_USER" "$OUTLINE_PG_PASSWORD" "$OUTLINE_PG_DB" || log "ERROR: Outline PostgreSQL backup failed"
+    backup_outline_files "$ts" || log "ERROR: Outline file storage backup failed"
     prune
+    upload_remote || log "ERROR: Remote upload failed"
     log "--- Backup run complete ---"
 }
 
