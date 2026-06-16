@@ -1,7 +1,7 @@
 FROM alpine:3.20
 
 RUN apk add --no-cache \
-    postgresql14-client \
+    postgresql16-client \
     mariadb-client \
     gzip \
     bash \

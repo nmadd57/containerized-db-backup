@@ -73,7 +73,7 @@ backup_outline_files() {
 
 upload_remote() {
     log "Uploading backups to $RCLONE_REMOTE..."
-    rclone copy "$DEST" "$RCLONE_REMOTE" -v
+    rclone copy "$DEST" "$RCLONE_REMOTE" --include "*.age" -v
     log "Upload complete."
 }
 
