@@ -9,6 +9,28 @@ mkdir -p "$DEST/maas" "$DEST/cloudstack" "$DEST/outline"
 
 log() { echo "[$(date -Iseconds)] $*"; }
 
+validate_config() {
+    local ok=1
+
+    # RETAIN_DAYS must be a positive integer to prevent injection into
+    # `find -mtime` and `rclone delete --min-age`.
+    if ! [[ "$RETAIN_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+        log "ERROR: BACKUP_RETAIN_DAYS must be a positive integer (got: '$RETAIN_DAYS')"
+        ok=0
+    fi
+
+    # AGE_RECIPIENT must look like an age X25519 public key (age1<bech32>).
+    # This catches missing/wrong key before any backup runs — a bad recipient
+    # causes age to fail silently on some builds, which would produce output
+    # that cannot be decrypted.
+    if ! [[ "$AGE_RECIPIENT" =~ ^age1[a-z0-9]{10,}$ ]]; then
+        log "ERROR: AGE_RECIPIENT does not look like an age public key (expected age1..., got: '${AGE_RECIPIENT:0:8}...')"
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ]
+}
+
 backup_postgres() {
     local ts="$1" name="$2" host="$3" port="$4" user="$5" pass="$6" db="$7"
     local out="$DEST/$name/${ts}.sql.gz.age"
@@ -98,6 +120,8 @@ run_backup() {
     upload_remote || log "ERROR: Remote upload failed"
     log "--- Backup run complete ---"
 }
+
+validate_config || exit 1
 
 run_backup
 
