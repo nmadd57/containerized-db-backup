@@ -5,7 +5,7 @@ INTERVAL="${BACKUP_INTERVAL_SECONDS:-86400}"
 RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-7}"
 DEST=/backups
 
-mkdir -p "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid"
+mkdir -p "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid" "$DEST/pyramid"
 
 log() { echo "[$(date -Iseconds)] $*"; }
 
@@ -112,6 +112,24 @@ backup_pocketid() {
     log "Saved: $uploads_out ($(du -sh "$uploads_out" | cut -f1))"
 }
 
+backup_pyramid() {
+    local ts="$1"
+    local out="$DEST/pyramid/${ts}.tar.gz.age"
+    local tmp="${out}.tmp"
+    log "Backing up Pyramid relay data..."
+    if ! tar -C /data/pyramid \
+        --exclude='./*/lock.mdb' \
+        --exclude='./*.lock' \
+        --exclude='./log' \
+        -czf - . \
+        | age -r "$AGE_RECIPIENT" -o "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$out"
+    log "Saved: $out ($(du -sh "$out" | cut -f1))"
+}
+
 backup_outline_files() {
     local ts="$1"
     local out="$DEST/outline/files_${ts}.tar.gz.age"
@@ -135,10 +153,10 @@ upload_remote() {
 
 prune() {
     log "Pruning backups older than ${RETAIN_DAYS} days..."
-    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid" -name "*.age" -mtime +"$RETAIN_DAYS" -delete
+    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid" "$DEST/pyramid" -name "*.age" -mtime +"$RETAIN_DAYS" -delete
     # Clears out partial archives from a run that was killed mid-dump, since
     # those don't match the *.age glob above and would otherwise pile up.
-    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid" -name "*.age.tmp" -delete
+    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid" "$DEST/pyramid" -name "*.age.tmp" -delete
 }
 
 run_backup() {
@@ -150,6 +168,7 @@ run_backup() {
     backup_postgres "$ts" outline "$OUTLINE_PG_HOST" "${OUTLINE_PG_PORT:-5432}" "$OUTLINE_PG_USER" "$OUTLINE_PG_PASSWORD" "$OUTLINE_PG_DB" || log "ERROR: Outline PostgreSQL backup failed"
     backup_outline_files "$ts" || log "ERROR: Outline file storage backup failed"
     backup_pocketid "$ts" || log "ERROR: PocketID backup failed"
+    backup_pyramid "$ts" || log "ERROR: Pyramid backup failed"
     prune
     upload_remote || log "ERROR: Remote upload failed"
     log "--- Backup run complete ---"
