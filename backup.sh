@@ -5,7 +5,7 @@ INTERVAL="${BACKUP_INTERVAL_SECONDS:-86400}"
 RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-7}"
 DEST=/backups
 
-mkdir -p "$DEST/maas" "$DEST/cloudstack" "$DEST/outline"
+mkdir -p "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid"
 
 log() { echo "[$(date -Iseconds)] $*"; }
 
@@ -79,6 +79,39 @@ backup_mariadb() {
     log "Saved: $out ($(du -sh "$out" | cut -f1))"
 }
 
+backup_pocketid() {
+    local ts="$1"
+    local snap="/tmp/pocketid-snap.db"
+    local db_out="$DEST/pocketid/${ts}.db.gz.age"
+    local db_tmp="${db_out}.tmp"
+    local uploads_out="$DEST/pocketid/uploads_${ts}.tar.gz.age"
+    local uploads_tmp="${uploads_out}.tmp"
+
+    log "Backing up PocketID database..."
+    sqlite3 /data/pocketid/pocket-id.db "VACUUM INTO '${snap}'"
+    if ! gzip -c "$snap" | age -r "$AGE_RECIPIENT" -o "$db_tmp"; then
+        rm -f "$db_tmp" "$snap"
+        return 1
+    fi
+    rm -f "$snap"
+    mv "$db_tmp" "$db_out"
+    log "Saved: $db_out ($(du -sh "$db_out" | cut -f1))"
+
+    log "Backing up PocketID uploads..."
+    if ! tar -C /data/pocketid \
+        --exclude='./GeoLite2-City.mmdb' \
+        --exclude='./*.db' \
+        --exclude='./*.db-wal' \
+        --exclude='./*.db-shm' \
+        -czf - uploads/ \
+        | age -r "$AGE_RECIPIENT" -o "$uploads_tmp"; then
+        rm -f "$uploads_tmp"
+        return 1
+    fi
+    mv "$uploads_tmp" "$uploads_out"
+    log "Saved: $uploads_out ($(du -sh "$uploads_out" | cut -f1))"
+}
+
 backup_outline_files() {
     local ts="$1"
     local out="$DEST/outline/files_${ts}.tar.gz.age"
@@ -102,10 +135,10 @@ upload_remote() {
 
 prune() {
     log "Pruning backups older than ${RETAIN_DAYS} days..."
-    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" -name "*.age" -mtime +"$RETAIN_DAYS" -delete
+    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid" -name "*.age" -mtime +"$RETAIN_DAYS" -delete
     # Clears out partial archives from a run that was killed mid-dump, since
     # those don't match the *.age glob above and would otherwise pile up.
-    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" -name "*.age.tmp" -delete
+    find "$DEST/maas" "$DEST/cloudstack" "$DEST/outline" "$DEST/pocketid" -name "*.age.tmp" -delete
 }
 
 run_backup() {
@@ -116,6 +149,7 @@ run_backup() {
     backup_mariadb "$ts" || log "ERROR: MariaDB backup failed"
     backup_postgres "$ts" outline "$OUTLINE_PG_HOST" "${OUTLINE_PG_PORT:-5432}" "$OUTLINE_PG_USER" "$OUTLINE_PG_PASSWORD" "$OUTLINE_PG_DB" || log "ERROR: Outline PostgreSQL backup failed"
     backup_outline_files "$ts" || log "ERROR: Outline file storage backup failed"
+    backup_pocketid "$ts" || log "ERROR: PocketID backup failed"
     prune
     upload_remote || log "ERROR: Remote upload failed"
     log "--- Backup run complete ---"

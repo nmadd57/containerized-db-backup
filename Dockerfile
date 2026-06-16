@@ -6,7 +6,8 @@ RUN apk add --no-cache \
     gzip \
     bash \
     age \
-    rclone
+    rclone \
+    sqlite
 
 COPY backup.sh /backup.sh
 RUN chmod +x /backup.sh
